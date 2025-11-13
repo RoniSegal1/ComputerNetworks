@@ -7,7 +7,7 @@ DEFAULT_PORT = 1337
 
 
 def print_usage_and_exit():
-    print(f"Usage: {sys.argv[0]} [hostname [port]]", file=sys.stderr)
+    print(f"Usage: {sys.argv[0]} [hostname [port]]", file=sys.stderr)  #check if error is correct or change
     sys.exit(1)
 
 
@@ -18,11 +18,11 @@ def parse_args():
 
     if argc >= 2:
         host = sys.argv[1]
-    if argc >= 3:
+    if argc == 3:
         try:
             port = int(sys.argv[2])
         except ValueError:
-            print("Port must be an integer", file=sys.stderr)
+            print("Port must be an integer", file=sys.stderr) #check if error is correct or change
             print_usage_and_exit()
     if argc > 3:
         print_usage_and_exit()
@@ -30,89 +30,84 @@ def parse_args():
     return host, port
 
 
-def recv_line(sock):
+def recv_line(connectionSock):
     data = b""
     while not data.endswith(b"\n"):
-        chunk = sock.recv(1)
+        chunk = connectionSock.recv(1)
         if not chunk:
             return ""
         data += chunk
     return data.decode("utf-8", errors="replace").rstrip("\r\n")
 
 
-def send_line(sock, text):
+def send_line(connectionSock, text):
     msg = (text + "\n").encode("utf-8")
-    sock.sendall(msg)
+    connectionSock.sendall(msg)
 
 
-def do_login(sock):
-    """מטפלת בלוגין עד הצלחה או ניתוק. מחזירה True אם הצליח, False אחרת."""
+def do_login(connectionSock):
     while True:
         username = input("User: ")
         password = input("Password: ")
+        send_line(connectionSock, f"User: {username}")
+        send_line(connectionSock, f"Password: {password}")
+        reply = recv_line(connectionSock)
 
-        send_line(sock, f"User: {username}")
-        send_line(sock, f"Password: {password}")
-
-        reply = recv_line(sock)
         if reply == "":
-            print("Server closed connection during login.")
+            print("Server closed connection during login.") #check if need to change
             return False
 
         print(reply)
 
         if reply.startswith("Hi "):
             return True
-        # אחרת זה כנראה "Failed to login", חוזרים לסיבוב נוסף
 
 
-def command_loop(sock):
-    """לולאת הפקודות אחרי שהתחברנו בהצלחה."""
+def command_loop(connectionSock):
     while True:
         try:
-            cmd = input()
-        except EOFError:
+            command = input()
+        except EOFError: #check if need to change
             break
 
-        if cmd == "":
+        if command == "":
             continue
 
-        send_line(sock, cmd)
+        send_line(connectionSock, command)
 
-        if cmd == "quit":
-            # לפי הפרוטוקול: השרת יסגור את החיבור, אין תשובה
+        if command == "quit":
             break
 
-        reply = recv_line(sock)
+        reply = recv_line(connectionSock)
+
         if reply == "":
-            print("Server closed connection.")
+            print("Server closed connection.") #check if need to change
             break
+
         print(reply)
 
 
 def main():
     host, port = parse_args()
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connectionSock:
         try:
-            sock.connect((host, port))
-        except OSError as e:
+            connectionSock.connect((host, port))
+        except OSError as e: #check if error needed
             print(f"Failed to connect to {host}:{port}: {e}", file=sys.stderr)
             sys.exit(1)
 
-        # welcome מהשרת
-        welcome = recv_line(sock)
+        welcome = recv_line(connectionSock)
+
         if welcome == "":
             print("Server closed connection.")
             return
         print(welcome)
 
-        # לוגין
-        if not do_login(sock):
+        if not do_login(connectionSock):
             return
 
-        # פקודות
-        command_loop(sock)
+        command_loop(connectionSock)
 
 
 if __name__ == "__main__":
