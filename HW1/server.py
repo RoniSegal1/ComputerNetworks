@@ -187,8 +187,7 @@ def handle_command(sock, client_state, line):
         return False
 
     sock.sendall(b"error: invalid input\n")
-    return False
-
+    return True
 
 
 def main():
