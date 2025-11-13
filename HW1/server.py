@@ -18,7 +18,6 @@ def print_usage_and_exit():
 
 def parse_args():
     argc = len(sys.argv)
-
     if argc < 2 or argc > 3:
         print_usage_and_exit()
 
@@ -126,8 +125,50 @@ def caesar_cipher(plaintext, shift):
 
     return ''.join(res_chars)
 
+def handle_parentheses_command(sock, line, prefix):
+    ans = "no"
+    expr = line[len(prefix):].lstrip()
+    balanced = parentheses_balanced(expr)
+    if (balanced):
+        ans = "yes"
+    resp = f"the parentheses are balanced: {ans}\n"
+    sock.sendall(resp.encode("utf-8"))
 
-def handle_command(sock, client_state, line):
+def handle_lcm_command(sock, line, prefix):
+    rest = line[len(prefix):].strip()
+    parts = rest.split()
+    if len(parts) != 2:
+        sock.sendall(b"error: invalid input\n")
+        return
+    try:
+        x = int(parts[0])
+        y = int(parts[1])
+    except ValueError:
+        sock.sendall(b"error: invalid input\n")
+        return
+    l = compute_lcm(x, y)
+    resp = f"the lcm is: {l}\n"
+    sock.sendall(resp.encode("utf-8"))
+
+def handle_caesar_command(sock, line, prefix):
+    rest = line[len(prefix):].lstrip()
+    if " " not in rest:
+        sock.sendall(b"error: invalid input\n")
+        return
+    plaintext_part, shift_str = rest.rsplit(" ", 1)
+    try:
+        shift = int(shift_str)
+    except ValueError:
+        sock.sendall(b"error: invalid input\n")
+        return
+    cipher = caesar_cipher(plaintext_part, shift)
+    if cipher is None:
+        sock.sendall(b"error: invalid input\n")
+    else:
+        resp = f"the ciphertext is: {cipher}\n"
+        sock.sendall(resp.encode("utf-8"))
+
+def handle_command(sock, line):
     line = line.strip()
     prefix_parentheses = "parentheses: "
     prefix_lcm = "lcm: "
@@ -136,57 +177,88 @@ def handle_command(sock, client_state, line):
     if line == "quit":
         return True
 
-    #parentheses
     if line.startswith(prefix_parentheses):
-        ans = "no"
-        expr = line[len(prefix_parentheses):].lstrip()
-        balanced = parentheses_balanced(expr)
-        if (balanced):
-            ans = "yes"
-        resp = f"the parentheses are balanced: {ans}\n"
-        sock.sendall(resp.encode("utf-8"))
+        handle_parentheses_command(sock, line, prefix_parentheses)
+        return False
+    elif line.startswith(prefix_lcm):
+        handle_lcm_command(sock, line, prefix_lcm)
+        return False
+    elif line.startswith(prefix_caesar):
+        handle_caesar_command(sock, line, prefix_caesar)
+        return False
+    else:
+        sock.sendall(b"error: invalid input\n")
+        return True
+
+
+def disconnect_client(sock, client_state, sockets_list, clients):
+    addr = client_state["addr"]
+    if sock in sockets_list:
+        sockets_list.remove(sock)
+    del clients[sock]
+    sock.close()
+
+
+def accept_new_client(server_sock, sockets_list, clients):
+    connection, addr = server_sock.accept()
+    sockets_list.append(connection)
+    clients[connection] = {
+        "addr": addr,
+        "logged_in": False,
+        "login_stage": "user",
+        "pending_username": None,
+    }
+    connection.sendall(WELCOME_MSG.encode("utf-8"))
+
+def handle_logged_in_client(current_sock, client_state, sockets_list, clients):
+    line = recv_line(current_sock)
+    if not line:
+        disconnect_client(current_sock, client_state, sockets_list, clients)
+        return
+
+    should_quit = handle_command(current_sock, client_state, line)
+    if should_quit:
+        disconnect_client(current_sock, client_state, sockets_list, clients)
+
+
+def handle_login_line(current_sock, client_state, users_dict):
+    line = recv_line(current_sock)
+    if not line:
         return False
 
-    # lcm
-    if line.startswith(prefix_lcm):
-        rest = line[len(prefix_lcm):].strip()
-        parts = rest.split()
-        if len(parts) != 2:
-            sock.sendall(b"error: invalid input\n")
-            return False
-        try:
-            x = int(parts[0])
-            y = int(parts[1])
-        except ValueError:
-            sock.sendall(b"error: invalid input\n")
-            return False
-        l = compute_lcm(x, y)
-        resp = f"the lcm is: {l}\n"
-        sock.sendall(resp.encode("utf-8"))
-        return False
+    stage = client_state["login_stage"]
 
-    # caesar
-    if line.startswith(prefix_caesar):
-        rest = line[len(prefix_caesar):].lstrip()
-        if " " not in rest:
-            sock.sendall(b"error: invalid input\n")
-            return False
-        plaintext_part, shift_str = rest.rsplit(" ", 1)
-        try:
-            shift = int(shift_str)
-        except ValueError:
-            sock.sendall(b"error: invalid input\n")
-            return False
-
-        cipher = caesar_cipher(plaintext_part, shift)
-        if cipher is None:
-            sock.sendall(b"error: invalid input\n")
+    if stage == "user":
+        username = parse_prefixed_value(line, "User:")
+        if username == "":
+            current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
         else:
-            resp = f"the ciphertext is: {cipher}\n"
-            sock.sendall(resp.encode("utf-8"))
-        return False
+            client_state["pending_username"] = username
+            client_state["login_stage"] = "password"
+        return True
 
-    sock.sendall(b"error: invalid input\n")
+    if stage == "password":
+        password = parse_prefixed_value(line, "Password:")
+        username = client_state["pending_username"]
+        if password == "" or username is None:
+            current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
+            client_state["pending_username"] = None
+            client_state["login_stage"] = "user"
+            return True
+
+        if not check_user_correct(username, password, users_dict):
+            current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
+            client_state["pending_username"] = None
+            client_state["login_stage"] = "user"
+            return True
+
+        hi_msg = f"Hi {username}, good to see you.\n"
+        current_sock.sendall(hi_msg.encode("utf-8"))
+        client_state["logged_in"] = True
+        client_state["login_stage"] = None
+        client_state["pending_username"] = None
+        return True
+
     return True
 
 
@@ -207,79 +279,23 @@ def main():
 
             for current_sock in readable:
                 if current_sock is server_sock:
-                    connection, addr = server_sock.accept()
-                    sockets_list.append(connection)
-                    clients[connection] = {
-                        "addr": addr,
-                        "logged_in": False,
-                        "login_stage": "user",
-                        "pending_username": None,
-                    }
-                    connection.sendall(WELCOME_MSG.encode("utf-8"))
-                else:
-                    client_state = clients.get(current_sock)
-                    if client_state is None:
-                        if current_sock in sockets_list:
-                            sockets_list.remove(current_sock)
-                        current_sock.close()
-                        continue
+                    accept_new_client(server_sock, sockets_list, clients)
+                    continue;
 
-                        if not client_state["logged_in"]:
-                            line = recv_line(current_sock)
-                            if not line:
-                                addr = client_state["addr"]
-                                if current_sock in sockets_list:
-                                    sockets_list.remove(current_sock)
-                                del clients[current_sock]
-                                current_sock.close()
-                                continue
+                client_state = clients.get(current_sock)
+                if client_state is None:
+                    if current_sock in sockets_list:
+                        sockets_list.remove(current_sock)
+                    current_sock.close()
+                    continue
 
-                            if client_state["login_stage"] == "user":
-                                username = parse_prefixed_value(line, "User:")
-                                if username == "":
-                                    current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
-                                else:
-                                    client_state["pending_username"] = username
-                                    client_state["login_stage"] = "password"
+                if not client_state["logged_in"]:
+                    result = handle_login_line(current_sock, client_state, users_dict)
+                    if not result:
+                        disconnect_client(current_sock, client_state, sockets_list, clients)
+                    continue
 
-                            elif client_state["login_stage"] == "password":
-                                password = parse_prefixed_value(line, "Password:")
-                                username = client_state["pending_username"]
-                                if password == "" or username is None:
-                                    current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
-                                    client_state["pending_username"] = None
-                                    client_state["login_stage"] = "user"
-                                else:
-                                    if not check_user_correct(username, password, users_dict):
-                                        current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
-                                        client_state["pending_username"] = None
-                                        client_state["login_stage"] = "user"
-                                    else:
-                                        hi_msg = f"Hi {username}, good to see you.\n"
-                                        current_sock.sendall(hi_msg.encode("utf-8"))
-                                        client_state["logged_in"] = True
-                                        client_state["login_stage"] = None
-                                        client_state["pending_username"] = None
-                            continue
-
-                    line = recv_line(current_sock)
-
-                    if not line:
-                        addr = client_state["addr"]
-                        if current_sock in sockets_list:
-                            sockets_list.remove(current_sock)
-                        del clients[current_sock]
-                        current_sock.close()
-                        continue
-
-                    result = handle_command(current_sock, client_state, line)
-                    if result:
-                        addr = client_state["addr"]
-                        if current_sock in sockets_list:
-                            sockets_list.remove(current_sock)
-                        del clients[current_sock]
-                        current_sock.close()
-                        continue
+                handle_logged_in_client(current_sock, client_state, sockets_list, clients)
 
 
 if __name__ == "__main__":
