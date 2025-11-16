@@ -134,11 +134,13 @@ def validate_lcm(command):
 
 def validate_caesar(command):
     rest = command[len(CAESAR_PREFIX):].strip()
-    parts = rest.split()
-    if len(parts) != 2:
+    if " " not in rest:
+        return False
+    plaintext, shift_str = rest.rsplit(" ", 1)
+    if plaintext.strip() == "":
         return False
     try:
-        y = int(parts[1])
+        int(shift_str)
     except ValueError:
         return False
 

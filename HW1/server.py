@@ -151,7 +151,7 @@ def handle_lcm_command(sock, line):
     sock.sendall(resp.encode("utf-8"))
 
 
-def handle_caesar_command(sock, line, ):
+def handle_caesar_command(sock, line):
     rest = line[len(CAESAR_PREFIX):].lstrip()
     plaintext_part, shift_str = rest.rsplit(" ", 1)
     shift = int(shift_str)
