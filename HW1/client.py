@@ -62,6 +62,7 @@ def parse_args():
 
         if not validate_port(port):
             print_error_and_exit("Error: invalid port")
+        port = int(port)
     if argc > 3:
         print_error_and_exit("Error: invalid number of arguments")
     return host, port
@@ -91,11 +92,11 @@ def do_login(connectionSock):
         username = input()
         password = input()
 
-        if not validate_login_input:
+        if not validate_login_input(username, password):
             print_error_and_close(connectionSock, "Unexpected login format")
 
-        send_line(connectionSock, f"{USER_PREFIX}{username}")
-        send_line(connectionSock, f"{PASSWORD_PREFIX}{password}")
+        send_line(connectionSock, f"{username}")
+        send_line(connectionSock, f"{password}")
         reply = recv_line(connectionSock)
 
         if reply == "":
@@ -128,9 +129,11 @@ def validate_lcm(command):
     except ValueError:
         return False
 
+    return True
+
 
 def validate_caesar(command):
-    rest = command[len(LCM_PREFIX):].strip()
+    rest = command[len(CAESAR_PREFIX):].strip()
     parts = rest.split()
     if len(parts) != 2:
         return False
@@ -138,6 +141,8 @@ def validate_caesar(command):
         y = int(parts[1])
     except ValueError:
         return False
+
+    return True
 
 
 def validate_command(connectionSock, command):
@@ -170,7 +175,7 @@ def command_request(connectionSock):
 
         if command == "quit":
             connectionSock.close()
-            sys.exit(1)
+            sys.exit(0)
 
         reply = recv_line(connectionSock)
 

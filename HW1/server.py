@@ -9,26 +9,42 @@ BACKLOG = 5
 HOST = ""
 WELCOME_MSG = "Welcome! Please log in.\n"
 FAILED_LOGIN_MSG = "Failed to login.\n"
+PARENTHESES_PREFIX = "parentheses: "
+LCM_PREFIX = "lcm: "
+CAESAR_PREFIX = "caesar: "
 
 
-def print_usage_and_exit():
-    print(f"Usage: {sys.argv[0]} users_file [port]", file=sys.stderr)  #check if need to change name of error
+def print_error_and_exit(err_msg):
+    print(err_msg)
     sys.exit(1)
+
+
+def print_error_and_close(con_socket, err_msg):
+    con_socket.close()
+    print_error_and_exit(err_msg)
+
+def validate_port(port):
+    try:
+        port = int(port)
+        if not 0 <= port <= 65535:
+            return False
+        return True
+    except ValueError:
+        return False
 
 
 def parse_args():
     argc = len(sys.argv)
     if argc < 2 or argc > 3:
-        print_usage_and_exit()
+        print_error_and_exit("Error: invalid number of arguments")
 
     users_file = sys.argv[1]
 
     if argc == 3:
-        try:
-            port = int(sys.argv[2])
-        except ValueError:
-            print("Port must be an integer", file=sys.stderr) #check if need to change name of error
-            print_usage_and_exit()
+        port = sys.argv[2]
+        if not validate_port(port):
+            print_error_and_exit("Error: invalid port")
+        port = int(port)
     else:
         port = DEFAULT_PORT
 
@@ -49,8 +65,7 @@ def load_users(users_file_path):
                 username, password = parts[0], parts[1]
                 users[username] = password
     except OSError as e:
-        print(f"Failed to open users file '{users_file_path}': {e}", file=sys.stderr)
-        sys.exit(1)
+        print_error_and_exit("Failed to open users file ")
 
     return users
 
@@ -102,12 +117,6 @@ def compute_lcm(x, y):
 
 
 def caesar_cipher(plaintext, shift):
-    for ch in plaintext:
-        if ch == ' ':
-            continue
-        if not ch.isalpha():
-            return None
-
     shift = shift % 26
     res_chars = []
 
@@ -121,67 +130,60 @@ def caesar_cipher(plaintext, shift):
 
     return ''.join(res_chars)
 
-def handle_parentheses_command(sock, line, prefix):
+
+def handle_parentheses_command(sock, line):
     ans = "no"
-    expr = line[len(prefix):].lstrip()
+    expr = line[len(PARENTHESES_PREFIX):].lstrip()
     balanced = parentheses_balanced(expr)
-    if (balanced):
+    if balanced:
         ans = "yes"
     resp = f"the parentheses are balanced: {ans}\n"
     sock.sendall(resp.encode("utf-8"))
 
-def handle_lcm_command(sock, line, prefix):
-    rest = line[len(prefix):].strip()
+
+def handle_lcm_command(sock, line):
+    rest = line[len(LCM_PREFIX):].strip()
     parts = rest.split()
-    if len(parts) != 2:
-        sock.sendall(b"error: invalid input\n")
-        return
-    try:
-        x = int(parts[0])
-        y = int(parts[1])
-    except ValueError:
-        sock.sendall(b"error: invalid input\n")
-        return
-    l = compute_lcm(x, y)
-    resp = f"the lcm is: {l}\n"
+    x = int(parts[0])
+    y = int(parts[1])
+    lcm = compute_lcm(x, y)
+    resp = f"the lcm is: {lcm}\n"
     sock.sendall(resp.encode("utf-8"))
 
-def handle_caesar_command(sock, line, prefix):
-    rest = line[len(prefix):].lstrip()
-    if " " not in rest:
-        sock.sendall(b"error: invalid input\n")
-        return
+
+def handle_caesar_command(sock, line, ):
+    rest = line[len(CAESAR_PREFIX):].lstrip()
     plaintext_part, shift_str = rest.rsplit(" ", 1)
-    try:
-        shift = int(shift_str)
-    except ValueError:
-        sock.sendall(b"error: invalid input\n")
-        return
+    shift = int(shift_str)
+
+    for ch in plaintext_part:
+        if ch == ' ':
+            continue
+        if not ch.isalpha():
+            sock.sendall(b"error: invalid input\n")
+            return
+
     cipher = caesar_cipher(plaintext_part, shift)
-    if cipher is None:
-        sock.sendall(b"error: invalid input\n")
-    else:
-        resp = f"the ciphertext is: {cipher}\n"
-        sock.sendall(resp.encode("utf-8"))
+    resp = f"the ciphertext is: {cipher}\n"
+    sock.sendall(resp.encode("utf-8"))
+
 
 def handle_command(sock, line):
     line = line.strip()
-    prefix_parentheses = "parentheses: "
-    prefix_lcm = "lcm: "
-    prefix_caesar = "caesar: "
 
     if line == "quit":
         return True
 
-    if line.startswith(prefix_parentheses):
-        handle_parentheses_command(sock, line, prefix_parentheses)
+    if line.startswith(PARENTHESES_PREFIX):
+        handle_parentheses_command(sock, line)
         return False
-    elif line.startswith(prefix_lcm):
-        handle_lcm_command(sock, line, prefix_lcm)
+    elif line.startswith(LCM_PREFIX):
+        handle_lcm_command(sock, line)
         return False
-    elif line.startswith(prefix_caesar):
-        handle_caesar_command(sock, line, prefix_caesar)
+    elif line.startswith(CAESAR_PREFIX):
+        handle_caesar_command(sock, line)
         return False
+    #Not possible with our client because handled in client
     else:
         sock.sendall(b"error: invalid input\n")
         return True
@@ -264,7 +266,6 @@ def handle_login_line(current_sock, client_state, users_dict):
 def main():
     users_file, port = parse_args()
     users_dict = load_users(users_file)
-
     clients = {}
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
