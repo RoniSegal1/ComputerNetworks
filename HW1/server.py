@@ -105,7 +105,7 @@ def caesar_cipher(plaintext, shift):
     for ch in plaintext:
         if ch == ' ':
             continue
-        if not ('a' <= ch <= 'z' or 'A' <= ch <= 'Z'):
+        if not ch.isalpha():
             return None
 
     shift = shift % 26
@@ -114,14 +114,10 @@ def caesar_cipher(plaintext, shift):
     for ch in plaintext:
         if ch == ' ':
             res_chars.append(' ')
-        elif 'a' <= ch <= 'z':
-            base = ord('a')
-            res_chars.append(chr(base + (ord(ch) - base + shift) % 26))
-        elif 'A' <= ch <= 'Z':
-            base = ord('A')
-            res_chars.append(chr(base + (ord(ch) - base + shift) % 26))
         else:
-            return None
+            lower_ch = ch.lower()
+            base = ord('a')
+            res_chars.append(chr(base + (ord(lower_ch) - base + shift) % 26))
 
     return ''.join(res_chars)
 
@@ -191,8 +187,7 @@ def handle_command(sock, line):
         return True
 
 
-def disconnect_client(sock, client_state, sockets_list, clients):
-    addr = client_state["addr"]
+def disconnect_client(sock, sockets_list, clients):
     if sock in sockets_list:
         sockets_list.remove(sock)
     del clients[sock]
@@ -210,15 +205,15 @@ def accept_new_client(server_sock, sockets_list, clients):
     }
     connection.sendall(WELCOME_MSG.encode("utf-8"))
 
-def handle_logged_in_client(current_sock, client_state, sockets_list, clients):
+def handle_logged_in_client(current_sock, sockets_list, clients):
     line = recv_line(current_sock)
     if not line:
-        disconnect_client(current_sock, client_state, sockets_list, clients)
+        disconnect_client(current_sock, sockets_list, clients)
         return
 
-    should_quit = handle_command(current_sock, client_state, line)
+    should_quit = handle_command(current_sock, line)
     if should_quit:
-        disconnect_client(current_sock, client_state, sockets_list, clients)
+        disconnect_client(current_sock, sockets_list, clients)
 
 
 def handle_login_line(current_sock, client_state, users_dict):
@@ -226,6 +221,10 @@ def handle_login_line(current_sock, client_state, users_dict):
     if not line:
         return False
 
+    normalized = line.strip()
+    forbidden_prefixes = ("parentheses:", "lcm:", "caesar:")
+    if normalized == "quit" or any(normalized.startswith(p) for p in forbidden_prefixes):
+        return False
     stage = client_state["login_stage"]
 
     if stage == "user":
@@ -280,7 +279,7 @@ def main():
             for current_sock in readable:
                 if current_sock is server_sock:
                     accept_new_client(server_sock, sockets_list, clients)
-                    continue;
+                    continue
 
                 client_state = clients.get(current_sock)
                 if client_state is None:
@@ -289,13 +288,13 @@ def main():
                     current_sock.close()
                     continue
 
-                if not client_state["logged_in"]:
+                if not client_state["logged_in"]: #add if i add a new command while im not logged in
                     result = handle_login_line(current_sock, client_state, users_dict)
                     if not result:
-                        disconnect_client(current_sock, client_state, sockets_list, clients)
+                        disconnect_client(current_sock, sockets_list, clients)
                     continue
 
-                handle_logged_in_client(current_sock, client_state, sockets_list, clients)
+                handle_logged_in_client(current_sock, sockets_list, clients)
 
 
 if __name__ == "__main__":
