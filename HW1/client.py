@@ -1,14 +1,50 @@
 #!/usr/bin/python3
 import socket
+import ipaddress
 import sys
+import re
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 1337
+USER_PREFIX = "User: "
+PASSWORD_PREFIX = "Password: "
+PARENTHESES_PREFIX = "parentheses: "
+LCM_PREFIX = "lcm: "
+CAESAR_PREFIX = "caesar: "
 
 
-def print_usage_and_exit():
-    print(f"Usage: {sys.argv[0]} [hostname [port]]", file=sys.stderr)  #check if error is correct or change
+def print_error_and_exit(err_msg):
+    print(err_msg)
     sys.exit(1)
+
+
+def print_error_and_close(con_socket, err_msg):
+    con_socket.close()
+    print_error_and_exit(err_msg)
+
+
+def validate_hostname(hostname):
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+
+    domain_regex = re.compile(r'^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z]{2,6})+$')
+    if domain_regex.match(hostname) or hostname == 'localhost':
+        return True
+
+    return False
+
+
+def validate_port(port):
+    try:
+        port = int(port)
+        if not 0 <= port <= 65535:
+            return False
+        return True
+    except ValueError:
+        return False
 
 
 def parse_args():
@@ -18,15 +54,16 @@ def parse_args():
 
     if argc >= 2:
         host = sys.argv[1]
-    if argc == 3:
-        try:
-            port = int(sys.argv[2])
-        except ValueError:
-            print("Port must be an integer", file=sys.stderr) #check if error is correct or change
-            print_usage_and_exit()
-    if argc > 3:
-        print_usage_and_exit()
 
+        if not validate_hostname(host):
+            print_error_and_exit("Error: invalid hostname")
+    if argc == 3:
+        port = sys.argv[2]
+
+        if not validate_port(port):
+            print_error_and_exit("Error: invalid port")
+    if argc > 3:
+        print_error_and_exit("Error: invalid number of arguments")
     return host, port
 
 
@@ -45,44 +82,100 @@ def send_line(connectionSock, text):
     connectionSock.sendall(msg)
 
 
+def validate_login_input(user, password):
+    return user.startswith(USER_PREFIX) and password.startswith(PASSWORD_PREFIX)
+
+
 def do_login(connectionSock):
     while True:
-        username = input("User: ")
-        password = input("Password: ")
-        send_line(connectionSock, f"User: {username}")
-        send_line(connectionSock, f"Password: {password}")
+        username = input()
+        password = input()
+
+        if not validate_login_input:
+            print_error_and_close(connectionSock, "Unexpected login format")
+
+        send_line(connectionSock, f"{USER_PREFIX}{username}")
+        send_line(connectionSock, f"{PASSWORD_PREFIX}{password}")
         reply = recv_line(connectionSock)
 
         if reply == "":
-            print("Server closed connection during login.") #check if need to change
-            return False
+            print_error_and_close(connectionSock, "Server closed connection during login.")
 
         print(reply)
 
         if reply.startswith("Hi "):
-            return True
+            break
 
 
-def command_loop(connectionSock):
+def validate_parentheses(command):
+    parentheses = command[len(PARENTHESES_PREFIX):].strip()
+
+    for ch in parentheses:
+        if ch != '(' and ch != ')':
+            return False
+
+    return True
+
+
+def validate_lcm(command):
+    rest = command[len(LCM_PREFIX):].strip()
+    parts = rest.split()
+    if len(parts) != 2:
+        return False
+    try:
+        x = int(parts[0])
+        y = int(parts[1])
+    except ValueError:
+        return False
+
+
+def validate_caesar(command):
+    rest = command[len(LCM_PREFIX):].strip()
+    parts = rest.split()
+    if len(parts) != 2:
+        return False
+    try:
+        y = int(parts[1])
+    except ValueError:
+        return False
+
+
+def validate_command(connectionSock, command):
+    if command.startswith(PARENTHESES_PREFIX):
+        return validate_parentheses(command)
+    elif command.startswith(LCM_PREFIX):
+        return validate_lcm(command)
+    elif command.startswith(CAESAR_PREFIX):
+        return validate_caesar(command)
+    elif command == "":
+        return False
+    elif command == "quit":
+        return True
+
+    print_error_and_close(connectionSock, "Invalid command")
+
+
+def command_request(connectionSock):
     while True:
         try:
             command = input()
-        except EOFError: #check if need to change
-            break
+        except EOFError:
+            print_error_and_close(connectionSock, "Invalid error")
 
-        if command == "":
+        if not validate_command(connectionSock, command):
+            print("error: invalid input")
             continue
 
         send_line(connectionSock, command)
 
         if command == "quit":
-            break
+            connectionSock.close()
+            sys.exit(1)
 
         reply = recv_line(connectionSock)
 
         if reply == "":
-            print("Server closed connection.") #check if need to change
-            break
+            print_error_and_close(connectionSock, "Server closed connection during command request.")
 
         print(reply)
 
@@ -93,22 +186,19 @@ def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connectionSock:
         try:
             connectionSock.connect((host, port))
-        except OSError as e: #check if error needed
-            print(f"Failed to connect to {host}:{port}: {e}", file=sys.stderr)
-            sys.exit(1)
+        except OSError as e:
+            print_error_and_exit("Failed to connect")
 
         welcome = recv_line(connectionSock)
 
         if welcome == "":
-            print("Server closed connection.")
-            return
+            print_error_and_close(connectionSock, "Server closed connection.")
+
         print(welcome)
-
-        if not do_login(connectionSock):
-            return
-
-        command_loop(connectionSock)
+        do_login(connectionSock)
+        command_request(connectionSock)
 
 
 if __name__ == "__main__":
     main()
+
