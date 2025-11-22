@@ -329,7 +329,8 @@ def disconnect_client(sock, sockets_list, clients):
        """
     if sock in sockets_list:
         sockets_list.remove(sock)
-    del clients[sock]
+    if sock in clients:
+        del clients[sock]
     sock.close()
 
 
