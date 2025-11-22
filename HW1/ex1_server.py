@@ -65,7 +65,7 @@ def parse_args():
             (str, int): Tuple (users_file_path, port)
         """
     argc = len(sys.argv)
-    print("argc", argc)
+
     if argc < 2 or argc > 3:
         print_error_and_exit("Error: invalid number of arguments")
 
