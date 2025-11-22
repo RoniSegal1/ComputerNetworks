@@ -83,16 +83,20 @@ def send_line(connectionSock, text):
     connectionSock.sendall(msg)
 
 
-def validate_login_input(user, password):
-    return user.startswith(USER_PREFIX) and password.startswith(PASSWORD_PREFIX)
+def validate_login_input(input, prefix):
+    return input.startswith(prefix)
 
 
 def do_login(connectionSock):
     while True:
         username = input()
+
+        if not validate_login_input(username, USER_PREFIX):
+            print_error_and_close(connectionSock, "Unexpected login format")
+
         password = input()
 
-        if not validate_login_input(username, password):
+        if not validate_login_input(password, PASSWORD_PREFIX):
             print_error_and_close(connectionSock, "Unexpected login format")
 
         send_line(connectionSock, f"{username}")
@@ -148,18 +152,19 @@ def validate_caesar(command):
 
 
 def validate_command(connectionSock, command):
-    if command.startswith(PARENTHESES_PREFIX):
-        return validate_parentheses(command)
-    elif command.startswith(LCM_PREFIX):
-        return validate_lcm(command)
-    elif command.startswith(CAESAR_PREFIX):
-        return validate_caesar(command)
-    elif command == "":
-        return False
-    elif command == "quit":
-        return True
+    res = True
 
-    print_error_and_close(connectionSock, "Invalid command")
+    if command.startswith(PARENTHESES_PREFIX):
+        res = validate_parentheses(command)
+    elif command.startswith(LCM_PREFIX):
+        res = validate_lcm(command)
+    elif command.startswith(CAESAR_PREFIX):
+        res = validate_caesar(command)
+    elif command != "quit":
+        res = False
+
+    if not res:
+        print_error_and_close(connectionSock, "Invalid command")
 
 
 def command_request(connectionSock):
@@ -169,10 +174,7 @@ def command_request(connectionSock):
         except EOFError:
             print_error_and_close(connectionSock, "Invalid error")
 
-        if not validate_command(connectionSock, command):
-            print("error: invalid input")
-            continue
-
+        validate_command(connectionSock, command)
         send_line(connectionSock, command)
 
         if command == "quit":
