@@ -229,7 +229,60 @@ def caesar_cipher(plaintext, shift):
     return ''.join(res_chars)
 
 
-def handle_parentheses_command(sock, line):
+def queue_send(sock, clients, write_list, data):
+    """
+    Queue data to be sent to the client.
+    - append to per-client out_buffer
+    - ensure socket is in write_list
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    state = clients.get(sock)
+    if state is None:
+        return
+    state["out_buffer"] += data
+    if sock not in write_list:
+        write_list.append(sock)
+
+
+def flush_client_buffer(sock, clients, sockets_list, write_list):
+    """
+    Try to send pending data from the client's out_buffer.
+    Called when socket appears as writeable in select().
+    """
+    state = clients.get(sock)
+    if state is None:
+        # client already disconnected
+        if sock in write_list:
+            write_list.remove(sock)
+        return
+
+    buf = state["out_buffer"]
+    if not buf:
+        # nothing to send, remove from write_list
+        if sock in write_list:
+            write_list.remove(sock)
+        if state.get("close_after_send"):
+            disconnect_client(sock, sockets_list, clients, write_list)
+        return
+
+    try:
+        sent = sock.send(buf)
+    except (ConnectionError, OSError):
+        # treat send error like disconnect
+        disconnect_client(sock, sockets_list, clients, write_list)
+        return
+
+    state["out_buffer"] = buf[sent:]
+    if not state["out_buffer"]:
+        # buffer empty, no need for write notifications
+        if sock in write_list:
+            write_list.remove(sock)
+        if state.get("close_after_send"):
+            disconnect_client(sock, sockets_list, clients, write_list)
+
+
+def handle_parentheses_command(sock, line, clients, write_list):
     """
         Handle parentheses command and send result to client.
 
@@ -243,10 +296,10 @@ def handle_parentheses_command(sock, line):
     if balanced:
         ans = "yes"
     resp = f"the parentheses are balanced: {ans}\n"
-    sock.sendall(resp.encode("utf-8"))
+    queue_send(sock, clients, write_list, resp)
 
 
-def handle_lcm_command(sock, line):
+def handle_lcm_command(sock, line, clients, write_list):
     """
         Handle LCM command and send result.
 
@@ -260,10 +313,10 @@ def handle_lcm_command(sock, line):
     y = int(parts[1])
     lcm = compute_lcm(x, y)
     resp = f"the lcm is: {lcm}\n"
-    sock.sendall(resp.encode("utf-8"))
+    queue_send(sock, clients, write_list, resp)
 
 
-def handle_caesar_command(sock, line):
+def handle_caesar_command(sock, line, clients, write_list):
     """
        Handle Caesar cipher command.
 
@@ -279,15 +332,15 @@ def handle_caesar_command(sock, line):
         if ch == ' ':
             continue
         if not ch.isalpha():
-            sock.sendall(b"error: invalid input\n")
+            queue_send(sock, clients, write_list, "error: invalid input\n")
             return
 
     cipher = caesar_cipher(plaintext_part, shift)
     resp = f"the ciphertext is: {cipher}\n"
-    sock.sendall(resp.encode("utf-8"))
+    queue_send(sock, clients, write_list, resp)
 
 
-def handle_command(sock, line):
+def handle_command(sock, line, clients, write_list):
     """
         Route a logged-in client's command to the appropriate handler.
 
@@ -304,21 +357,24 @@ def handle_command(sock, line):
         return True
 
     if line.startswith(PARENTHESES_PREFIX):
-        handle_parentheses_command(sock, line)
+        handle_parentheses_command(sock, line, clients, write_list)
         return False
     elif line.startswith(LCM_PREFIX):
-        handle_lcm_command(sock, line)
+        handle_lcm_command(sock, line, clients, write_list)
         return False
     elif line.startswith(CAESAR_PREFIX):
-        handle_caesar_command(sock, line)
+        handle_caesar_command(sock, line, clients, write_list)
         return False
     #Not possible with our client because handled in client
     else:
-        sock.sendall(b"error: invalid input\n")
-        return True
+        state = clients.get(sock)
+        if state is not None:
+            queue_send(sock, clients, write_list, "error: invalid input\n")
+            state["close_after_send"] = True
+        return False
 
 
-def disconnect_client(sock, sockets_list, clients):
+def disconnect_client(sock, sockets_list, clients, write_list):
     """
        Remove client from tracking structures and close socket.
 
@@ -329,12 +385,14 @@ def disconnect_client(sock, sockets_list, clients):
        """
     if sock in sockets_list:
         sockets_list.remove(sock)
+    if sock in write_list:
+        write_list.remove(sock)
     if sock in clients:
         del clients[sock]
     sock.close()
 
 
-def accept_new_client(server_sock, sockets_list, clients):
+def accept_new_client(server_sock, sockets_list, clients, write_list):
     """
        Accept a new client and send the welcome message.
 
@@ -350,10 +408,13 @@ def accept_new_client(server_sock, sockets_list, clients):
         "logged_in": False,
         "login_stage": "user",
         "pending_username": None,
+        "out_buffer": b"",
+        "close_after_send": False,
     }
-    connection.sendall(WELCOME_MSG.encode("utf-8"))
+    queue_send(connection, clients, write_list, WELCOME_MSG)
 
-def handle_logged_in_client(current_sock, sockets_list, clients):
+
+def handle_logged_in_client(current_sock, sockets_list, clients, write_list):
     """
         Handle commands from logged-in clients.
 
@@ -364,15 +425,15 @@ def handle_logged_in_client(current_sock, sockets_list, clients):
         """
     line = recv_line(current_sock)
     if not line:
-        disconnect_client(current_sock, sockets_list, clients)
+        disconnect_client(current_sock, sockets_list, clients, write_list)
         return
 
-    should_quit = handle_command(current_sock, line)
+    should_quit = handle_command(current_sock, line, clients, write_list)
     if should_quit:
-        disconnect_client(current_sock, sockets_list, clients)
+        disconnect_client(current_sock, sockets_list, clients, write_list)
 
 
-def handle_login_line(current_sock, client_state, users_dict):
+def handle_login_line(current_sock, client_state, users_dict, clients, write_list):
     """
         Process login lines ("User: ..." then "Password: ...") until success.
 
@@ -392,12 +453,13 @@ def handle_login_line(current_sock, client_state, users_dict):
     forbidden_prefixes = ("parentheses:", "lcm:", "caesar:")
     if normalized == "quit" or any(normalized.startswith(p) for p in forbidden_prefixes):
         return False
+
     stage = client_state["login_stage"]
 
     if stage == "user":
         username = parse_prefixed_value(line, "User:")
         if username == "":
-            current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
+            queue_send(current_sock, clients, write_list, FAILED_LOGIN_MSG)
         else:
             client_state["pending_username"] = username
             client_state["login_stage"] = "password"
@@ -407,19 +469,19 @@ def handle_login_line(current_sock, client_state, users_dict):
         password = parse_prefixed_value(line, "Password:")
         username = client_state["pending_username"]
         if password == "" or username is None:
-            current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
+            queue_send(current_sock, clients, write_list, FAILED_LOGIN_MSG)
             client_state["pending_username"] = None
             client_state["login_stage"] = "user"
             return True
 
         if not check_user_correct(username, password, users_dict):
-            current_sock.sendall(FAILED_LOGIN_MSG.encode("utf-8"))
+            queue_send(current_sock, clients, write_list, FAILED_LOGIN_MSG)
             client_state["pending_username"] = None
             client_state["login_stage"] = "user"
             return True
 
         hi_msg = f"Hi {username}, good to see you.\n"
-        current_sock.sendall(hi_msg.encode("utf-8"))
+        queue_send(current_sock, clients, write_list, hi_msg)
         client_state["logged_in"] = True
         client_state["login_stage"] = None
         client_state["pending_username"] = None
@@ -434,7 +496,7 @@ def main():
         - load users
         - open server socket
         - accept new clients
-        - handle login and commands using select()
+        - handle login and commands using select() for read and write
         """
     users_file, port = parse_args()
     users_dict = load_users(users_file)
@@ -444,14 +506,13 @@ def main():
         server_sock.bind((HOST, port))
         server_sock.listen(BACKLOG)
         sockets_list = [server_sock]
+        write_list = []
         while True:
-            readable, _, _ = select.select(sockets_list, [], [], 10.0)
-            if not readable:
-                continue
+            readable, writable, _ = select.select(sockets_list, write_list, [], 10.0)
 
             for current_sock in readable:
                 if current_sock is server_sock:
-                    accept_new_client(server_sock, sockets_list, clients)
+                    accept_new_client(server_sock, sockets_list, clients, write_list)
                     continue
 
                 client_state = clients.get(current_sock)
@@ -462,12 +523,19 @@ def main():
                     continue
 
                 if not client_state["logged_in"]: #add if i add a new command while im not logged in
-                    result = handle_login_line(current_sock, client_state, users_dict)
+                    result = handle_login_line(current_sock, client_state, users_dict, clients, write_list)
                     if not result:
-                        disconnect_client(current_sock, sockets_list, clients)
+                        disconnect_client(current_sock, sockets_list, clients, write_list)
                     continue
 
-                handle_logged_in_client(current_sock, sockets_list, clients)
+                handle_logged_in_client(current_sock, sockets_list, clients, write_list)
+
+            for current_sock in list(writable):
+                if current_sock not in clients:
+                    if current_sock in write_list:
+                        write_list.remove(current_sock)
+                    continue
+                flush_client_buffer(current_sock, clients, sockets_list, write_list)
 
 
 if __name__ == "__main__":
